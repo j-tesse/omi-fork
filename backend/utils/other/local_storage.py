@@ -198,10 +198,25 @@ class LocalBucket:
             blob.reload()
         return blobs
 
-    def copy_blob(self, blob: LocalBlob, destination_bucket: 'LocalBucket', new_name: str) -> LocalBlob:
+    def get_blob(self, blob_name: str, *_args, **_kwargs) -> LocalBlob | None:
+        blob = self.blob(blob_name)
+        if not blob.exists():
+            return None
+        blob.reload()
+        return blob
+
+    def copy_blob(self, blob: LocalBlob, destination_bucket: 'LocalBucket', new_name: str, **_kwargs) -> LocalBlob:
+        # Same destination precondition as upload_from_string (sync bridge copies use it).
         destination = destination_bucket.blob(new_name)
+        match = _kwargs.get('if_generation_match')
+        if match not in (None, 0):
+            destination._check_generation(int(match))
         destination.path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(blob.path, destination.path)
+        try:
+            with blob.path.open('rb') as source, destination.path.open('xb' if match == 0 else 'wb') as target:
+                shutil.copyfileobj(source, target)
+        except FileExistsError as error:
+            raise PreconditionFailed('local storage create-only object exists') from error
         return destination
 
 
