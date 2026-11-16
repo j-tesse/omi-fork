@@ -98,6 +98,28 @@ def test_local_storage_supports_streaming_copy_and_listing(monkeypatch: pytest.M
     assert [blob.name for blob in destination_bucket.list_blobs(prefix='user/')] == ['user/archive/chunk.bin']
 
 
+def test_local_copy_blob_honors_sync_bridge_preconditions(tmp_path: Path) -> None:
+    # merge_conversations._copy_bridge_chunk: create-only or generation-matched
+    # copy with retry=None, and get_blob to inspect the winner of a race.
+    bucket = LocalStorageClient(tmp_path).bucket('omi-private-cloud-sync')
+    source = bucket.blob('chunks/uid/donor/1.bin')
+    source.upload_from_string(b'chunk')
+    target = 'chunks/uid/target/1.bin'
+    assert bucket.get_blob(target, retry=None) is None
+
+    bucket.copy_blob(source, bucket, target, if_generation_match=0, retry=None)
+    with pytest.raises(PreconditionFailed):
+        bucket.copy_blob(source, bucket, target, if_generation_match=0, retry=None)
+    current = bucket.get_blob(target, retry=None)
+    assert current is not None and current.download_as_bytes() == b'chunk'
+
+    source.upload_from_string(b'chunk-v2')
+    with pytest.raises(PreconditionFailed):
+        bucket.copy_blob(source, bucket, target, if_generation_match=current.generation + 1, retry=None)
+    bucket.copy_blob(source, bucket, target, if_generation_match=current.generation, retry=None)
+    assert bucket.blob(target).download_as_bytes() == b'chunk-v2'
+
+
 def test_local_storage_rejects_non_harness_and_traversal_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     storage_root = _configure(monkeypatch, tmp_path)
     monkeypatch.setenv('OMI_LOCAL_STORAGE_ROOT', str(tmp_path / 'outside'))
